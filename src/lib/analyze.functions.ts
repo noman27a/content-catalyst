@@ -157,6 +157,132 @@ async function fetchYouTubeTranscript(videoId: string): Promise<string> {
   }
 }
 
+function readTextRenderer(value: unknown): string {
+  if (!value || typeof value !== "object") return "";
+  const renderer = value as { simpleText?: unknown; runs?: unknown };
+  if (typeof renderer.simpleText === "string") return renderer.simpleText;
+  if (!Array.isArray(renderer.runs)) return "";
+  return renderer.runs
+    .map((run) => {
+      if (!run || typeof run !== "object") return "";
+      const text = (run as { text?: unknown }).text;
+      return typeof text === "string" ? text : "";
+    })
+    .join("")
+    .trim();
+}
+
+function extractBalancedJson(html: string, marker: string): unknown | null {
+  const markerIndex = html.indexOf(marker);
+  if (markerIndex === -1) return null;
+  const start = html.indexOf("{", markerIndex);
+  if (start === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < html.length; i += 1) {
+    const char = html[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === "\\") escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') inString = true;
+    else if (char === "{") depth += 1;
+    else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        try {
+          return JSON.parse(html.slice(start, i + 1));
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+type YouTubeListVideo = {
+  id: { videoId: string };
+  snippet: { title: string; description: string; channelTitle: string };
+};
+
+function collectVideosFromInitialData(
+  node: unknown,
+  channelTitle: string,
+  videos: YouTubeListVideo[],
+  seen = new Set<string>(),
+): void {
+  if (videos.length >= 5 || node == null) return;
+  if (Array.isArray(node)) {
+    for (const item of node) collectVideosFromInitialData(item, channelTitle, videos, seen);
+    return;
+  }
+  if (typeof node !== "object") return;
+  const record = node as Record<string, unknown>;
+  const maybeVideo = record.videoRenderer;
+  if (maybeVideo && typeof maybeVideo === "object") {
+    const renderer = maybeVideo as Record<string, unknown>;
+    const videoId = renderer.videoId;
+    if (typeof videoId === "string" && !seen.has(videoId)) {
+      const title = readTextRenderer(renderer.title) || "Untitled YouTube video";
+      const description = readTextRenderer(renderer.descriptionSnippet);
+      seen.add(videoId);
+      videos.push({
+        id: { videoId },
+        snippet: { title, description, channelTitle },
+      });
+    }
+  }
+  for (const value of Object.values(record)) {
+    collectVideosFromInitialData(value, channelTitle, videos, seen);
+    if (videos.length >= 5) return;
+  }
+}
+
+async function scrapeYouTubeChannelVideos(
+  handleOrId: string,
+  channelId: string,
+  channelTitle: string,
+): Promise<YouTubeListVideo[]> {
+  const raw = handleOrId.replace(/^@/, "");
+  const bases = channelId
+    ? [`https://www.youtube.com/channel/${channelId}`]
+    : [`https://www.youtube.com/@${raw}`, `https://www.youtube.com/c/${raw}`, `https://www.youtube.com/user/${raw}`];
+  const paths = ["/videos?view=0&sort=dd&shelf_id=0", "/videos", "/shorts", "/streams"];
+  const headers = {
+    "user-agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    "accept-language": "en-US,en;q=0.9",
+  };
+
+  for (const base of bases) {
+    for (const path of paths) {
+      try {
+        const res = await fetch(`${base}${path}`, { headers });
+        if (!res.ok) continue;
+        const html = await res.text();
+        const title =
+          channelTitle ||
+          html.match(/<meta property="og:title" content="([^"]+)"/)?.[1]?.replace(/ - YouTube$/, "") ||
+          "YouTube channel";
+        const initialData =
+          extractBalancedJson(html, "var ytInitialData =") ??
+          extractBalancedJson(html, "ytInitialData =");
+        const scraped: YouTubeListVideo[] = [];
+        collectVideosFromInitialData(initialData, title, scraped);
+        if (scraped.length > 0) return scraped;
+      } catch {
+        /* try the next public page variant */
+      }
+    }
+  }
+  return [];
+}
+
 async function fetchYouTubeChannelRecent(handleOrId: string, apiKey: string) {
   // Resolve to channelId
   let channelId = handleOrId.startsWith("UC") ? handleOrId : "";
