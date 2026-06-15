@@ -311,6 +311,24 @@ async function callClaude(payload: string, apiKey: string): Promise<string> {
 
 /* ---------------- Server function ---------------- */
 
+function parseIsoDurationToMinutes(iso: string): number {
+  if (!iso) return 0;
+  const m = iso.match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/);
+  if (!m) return 0;
+  const h = parseInt(m[1] ?? "0", 10);
+  const mm = parseInt(m[2] ?? "0", 10);
+  const s = parseInt(m[3] ?? "0", 10);
+  return Math.max(1, Math.round((h * 3600 + mm * 60 + s) / 60));
+}
+
+function formatDurationLabel(totalMinutes: number): string {
+  if (totalMinutes < 1) return "under 1 minute";
+  if (totalMinutes < 60) return `${totalMinutes} minute${totalMinutes === 1 ? "" : "s"}`;
+  const h = Math.floor(totalMinutes / 60);
+  const m = totalMinutes % 60;
+  return m === 0 ? `${h}h` : `${h}h ${m}m`;
+}
+
 export const analyzeContent = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => InputSchema.parse(input))
   .handler(async ({ data }): Promise<ReplicationKit> => {
@@ -323,6 +341,7 @@ export const analyzeContent = createServerFn({ method: "POST" })
     let title = "";
     let author: string | undefined;
     let transcriptText = "";
+    let durationMinutes = 0;
 
     if (source.platform === "youtube") {
       if (!ytKey) throw new Error("Missing YOUTUBE_API_KEY.");
@@ -331,16 +350,28 @@ export const analyzeContent = createServerFn({ method: "POST" })
         const transcript = await fetchYouTubeTranscript(source.id);
         title = meta.snippet.title;
         author = meta.snippet.channelTitle;
+        durationMinutes = parseIsoDurationToMinutes(
+          meta.contentDetails?.duration ?? "",
+        );
         transcriptText =
           `TITLE: ${title}\n` +
           `CHANNEL: ${author}\n` +
+          (durationMinutes
+            ? `VIDEO DURATION: ${durationMinutes} minutes (~${durationMinutes * 150} spoken words target)\n`
+            : "") +
           `DESCRIPTION:\n${meta.snippet.description}\n\n` +
           `TRANSCRIPT:\n${transcript || "(transcript not available — analyze from title + description)"}`;
       } else {
         const ch = await fetchYouTubeChannelRecent(source.handleOrId, ytKey);
         title = ch.title;
         author = ch.author;
+        durationMinutes = parseIsoDurationToMinutes(ch.durationIso ?? "");
         transcriptText = ch.transcriptText;
+        if (durationMinutes) {
+          transcriptText =
+            `LATEST VIDEO DURATION: ${durationMinutes} minutes (~${durationMinutes * 150} spoken words target)\n\n` +
+            transcriptText;
+        }
       }
     } else {
       if (!apifyKey) throw new Error("Missing APIFY_API_KEY.");
@@ -349,6 +380,9 @@ export const analyzeContent = createServerFn({ method: "POST" })
         title = tt.title;
         author = tt.author;
         transcriptText = tt.transcriptText;
+        durationMinutes = tt.durationSeconds
+          ? Math.max(1, Math.round(tt.durationSeconds / 60))
+          : 0;
       } else {
         const tt = await fetchTikTokProfile(source.username, apifyKey);
         title = tt.title;
@@ -359,9 +393,13 @@ export const analyzeContent = createServerFn({ method: "POST" })
 
     // Cap payload to keep token usage sane.
     const trimmed = transcriptText.slice(0, 16000);
+    const durationLine = durationMinutes
+      ? `ORIGINAL VIDEO DURATION: ${formatDurationLabel(durationMinutes)} (${durationMinutes} minutes total). Your Script Writing section MUST match this runtime — target ~${durationMinutes * 150} spoken words, broken into chronological scenes with timestamps from 00:00 to ${formatDurationLabel(durationMinutes)}.\n\n`
+      : `ORIGINAL VIDEO DURATION: unknown — infer the target runtime from the transcript length and produce a full, scene-by-scene script of matching depth.\n\n`;
     const userPayload =
       `SOURCE: ${source.platform.toUpperCase()} (${source.kind})\n` +
       `URL: ${data.url}\n\n` +
+      durationLine +
       `--- CONTENT START ---\n${trimmed}\n--- CONTENT END ---\n\n` +
       `Now produce the Content Replication Kit exactly as instructed.`;
 
@@ -374,6 +412,8 @@ export const analyzeContent = createServerFn({ method: "POST" })
         author,
         url: data.url,
         transcriptPreview: trimmed.slice(0, 600),
+        durationMinutes: durationMinutes || undefined,
+        durationLabel: durationMinutes ? formatDurationLabel(durationMinutes) : undefined,
       },
       markdown,
     };
