@@ -1,5 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
+import { YoutubeTranscript } from "youtube-transcript";
 
 const InputSchema = z.object({
   url: z.string().trim().min(5).max(500),
@@ -86,10 +87,46 @@ async function fetchYouTubeVideo(videoId: string, apiKey: string) {
 }
 
 async function fetchYouTubeTranscript(videoId: string): Promise<string> {
-  // Best-effort: scrape the watch page to find caption tracks.
+  // 1) Primary: youtube-transcript npm package (scrapes public captions, no OAuth).
+  try {
+    const segments = await YoutubeTranscript.fetchTranscript(videoId, {
+      lang: "en",
+    });
+    const text = segments
+      .map((s) => s.text)
+      .join(" ")
+      .replace(/&amp;#39;/g, "'")
+      .replace(/&amp;quot;/g, '"')
+      .replace(/&amp;/g, "&")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (text) return text;
+  } catch {
+    /* fall through to language-agnostic fetch */
+  }
+  try {
+    const segments = await YoutubeTranscript.fetchTranscript(videoId);
+    const text = segments
+      .map((s) => s.text)
+      .join(" ")
+      .replace(/&amp;#39;/g, "'")
+      .replace(/&amp;quot;/g, '"')
+      .replace(/&amp;/g, "&")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (text) return text;
+  } catch {
+    /* fall through to watch-page scrape */
+  }
+
+  // 2) Fallback: scrape the watch page for captionTracks (auto-generated tracks etc.).
   try {
     const page = await fetch(`https://www.youtube.com/watch?v=${videoId}&hl=en`, {
-      headers: { "User-Agent": "Mozilla/5.0 (compatible; ContentForge/1.0)" },
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        "Accept-Language": "en-US,en;q=0.9",
+      },
     });
     const html = await page.text();
     const match = html.match(/"captionTracks":(\[.*?\])/);
@@ -97,13 +134,15 @@ async function fetchYouTubeTranscript(videoId: string): Promise<string> {
     const tracks = JSON.parse(match[1]) as Array<{
       baseUrl: string;
       languageCode: string;
+      kind?: string;
     }>;
     const track =
-      tracks.find((t) => t.languageCode === "en") ?? tracks[0];
+      tracks.find((t) => t.languageCode === "en" && !t.kind) ??
+      tracks.find((t) => t.languageCode === "en") ??
+      tracks[0];
     if (!track?.baseUrl) return "";
     const xmlRes = await fetch(track.baseUrl);
     const xml = await xmlRes.text();
-    // Strip XML tags + decode basic entities.
     return xml
       .replace(/<[^>]+>/g, " ")
       .replace(/&amp;/g, "&")
