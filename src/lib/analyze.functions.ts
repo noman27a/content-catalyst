@@ -12,6 +12,8 @@ export type ReplicationKit = {
     author?: string;
     url: string;
     transcriptPreview: string;
+    durationMinutes?: number;
+    durationLabel?: string;
   };
   markdown: string;
 };
@@ -63,7 +65,7 @@ function detectSource(raw: string): SourceKind {
 
 async function fetchYouTubeVideo(videoId: string, apiKey: string) {
   const res = await fetch(
-    `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&id=${videoId}&key=${apiKey}`,
+    `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails&id=${videoId}&key=${apiKey}`,
   );
   if (!res.ok) throw new Error(`YouTube API error: ${res.status}`);
   const json = (await res.json()) as {
@@ -75,6 +77,7 @@ async function fetchYouTubeVideo(videoId: string, apiKey: string) {
         tags?: string[];
       };
       statistics?: { viewCount?: string; likeCount?: string };
+      contentDetails?: { duration?: string };
     }>;
   };
   const item = json.items?.[0];
@@ -144,6 +147,19 @@ async function fetchYouTubeChannelRecent(handleOrId: string, apiKey: string) {
   // Pull transcript for top video, titles+descriptions for the rest.
   const top = videos[0];
   const transcript = await fetchYouTubeTranscript(top.id.videoId);
+  // Also fetch duration for the top video
+  let topDurationIso = "";
+  try {
+    const dRes = await fetch(
+      `https://www.googleapis.com/youtube/v3/videos?part=contentDetails&id=${top.id.videoId}&key=${apiKey}`,
+    );
+    const dj = (await dRes.json()) as {
+      items?: Array<{ contentDetails?: { duration?: string } }>;
+    };
+    topDurationIso = dj.items?.[0]?.contentDetails?.duration ?? "";
+  } catch {
+    /* ignore */
+  }
   const summary = videos
     .map(
       (v, i) =>
@@ -159,6 +175,7 @@ async function fetchYouTubeChannelRecent(handleOrId: string, apiKey: string) {
     title: `${channelTitle} — channel analysis`,
     author: channelTitle,
     transcriptText: body,
+    durationIso: topDurationIso,
   };
 }
 
@@ -193,6 +210,7 @@ async function fetchTikTokVideo(url: string, token: string) {
         hashtags?: Array<{ name: string }>;
         playCount?: number;
         diggCount?: number;
+        videoMeta?: { duration?: number };
       }
     | undefined;
   if (!it) throw new Error("TikTok post not found.");
@@ -202,7 +220,12 @@ async function fetchTikTokVideo(url: string, token: string) {
     `CAPTION/TEXT:\n${it.text ?? ""}\n\n` +
     `HASHTAGS: ${tags}\n` +
     `METRICS: ${it.playCount ?? "?"} views, ${it.diggCount ?? "?"} likes`;
-  return { title: `TikTok post by @${author}`, author, transcriptText: body };
+  return {
+    title: `TikTok post by @${author}`,
+    author,
+    transcriptText: body,
+    durationSeconds: it.videoMeta?.duration ?? 0,
+  };
 }
 
 async function fetchTikTokProfile(username: string, token: string) {
@@ -239,8 +262,11 @@ const SYSTEM_PROMPT = `You are ContentForge AI, an elite Content Strategist and 
 - Channel DNA (Tone, Vibe, Target Audience, and Hook Strategy).
 - Reusable Master Prompt (A custom prompt the user can copy-paste later to generate similar scripts).
 - Title Generation (5 highly click-worthy titles in the exact same style).
-- Script Writing (A complete, structured 60-second or 5-minute script with Hook, Body, and CTA timestamps).
-- Visuals & Editing Guide (Specific Midjourney/Leonardo AI prompts for image generation, and video clip sourcing ideas like Pexels/Wikipedia).
+- Comprehensive Script Re-writing: Generate a complete, full-length script that matches the exact duration and depth of the analyzed video. FIRST, analyze the total length / word count of the fetched transcript and the provided VIDEO DURATION metadata, then dynamically match the output script's duration to the original video's duration. If the original video is 15 minutes, 30 minutes, or 1 hour long, the generated script MUST be a full, comprehensive, scene-by-scene breakdown of that exact length — do NOT truncate or summarize it into a short version. Use the industry rule of ~150 spoken words per minute to size the script (e.g. a 30-minute video → ~4,500 words of narration). Divide the script into clear chronological scenes or chapters with explicit timestamps spanning from 00:00 to the full runtime. For EVERY single scene/timestamp, provide:
+  * The spoken narration/voiceover text in full (no placeholders, no "continue in this style" shortcuts).
+  * Detailed visual prompts for AI video generation (Midjourney / Leonardo AI) specifically tailored for that exact scene.
+  * Specific editing instructions (transitions, overlays, sound effects, b-roll cues) for that exact moment.
+- Visuals & Editing Guide (Global Midjourney/Leonardo AI style guide, color grade, and video clip sourcing ideas like Pexels/Wikipedia that apply across the whole video).
 - Voiceover Character (Recommend specific ElevenLabs voice models like 'Adam - deep documentary' or 'Marcus - energetic' with stability/clarity setting recommendations).
 
 Format your output as clean Markdown. Use these exact H2 section headers in this order:
@@ -251,7 +277,7 @@ Format your output as clean Markdown. Use these exact H2 section headers in this
 ## Visuals & Editing Guide
 ## Voiceover Character
 
-Be specific, opinionated, and avoid generic advice. Mirror the source creator's voice precisely.`;
+Inside ## Script Writing, begin with a one-line "Target runtime: X minutes (~Y words)" header, then output every scene in order until the full runtime is covered. Be specific, opinionated, and avoid generic advice. Mirror the source creator's voice precisely.`;
 
 async function callClaude(payload: string, apiKey: string): Promise<string> {
   const res = await fetch("https://api.anthropic.com/v1/messages", {
@@ -263,7 +289,7 @@ async function callClaude(payload: string, apiKey: string): Promise<string> {
     },
     body: JSON.stringify({
       model: "claude-sonnet-4-5-20250929",
-      max_tokens: 4000,
+      max_tokens: 16000,
       system: SYSTEM_PROMPT,
       messages: [{ role: "user", content: payload }],
     }),
@@ -285,6 +311,24 @@ async function callClaude(payload: string, apiKey: string): Promise<string> {
 
 /* ---------------- Server function ---------------- */
 
+function parseIsoDurationToMinutes(iso: string): number {
+  if (!iso) return 0;
+  const m = iso.match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/);
+  if (!m) return 0;
+  const h = parseInt(m[1] ?? "0", 10);
+  const mm = parseInt(m[2] ?? "0", 10);
+  const s = parseInt(m[3] ?? "0", 10);
+  return Math.max(1, Math.round((h * 3600 + mm * 60 + s) / 60));
+}
+
+function formatDurationLabel(totalMinutes: number): string {
+  if (totalMinutes < 1) return "under 1 minute";
+  if (totalMinutes < 60) return `${totalMinutes} minute${totalMinutes === 1 ? "" : "s"}`;
+  const h = Math.floor(totalMinutes / 60);
+  const m = totalMinutes % 60;
+  return m === 0 ? `${h}h` : `${h}h ${m}m`;
+}
+
 export const analyzeContent = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => InputSchema.parse(input))
   .handler(async ({ data }): Promise<ReplicationKit> => {
@@ -297,6 +341,7 @@ export const analyzeContent = createServerFn({ method: "POST" })
     let title = "";
     let author: string | undefined;
     let transcriptText = "";
+    let durationMinutes = 0;
 
     if (source.platform === "youtube") {
       if (!ytKey) throw new Error("Missing YOUTUBE_API_KEY.");
@@ -305,16 +350,28 @@ export const analyzeContent = createServerFn({ method: "POST" })
         const transcript = await fetchYouTubeTranscript(source.id);
         title = meta.snippet.title;
         author = meta.snippet.channelTitle;
+        durationMinutes = parseIsoDurationToMinutes(
+          meta.contentDetails?.duration ?? "",
+        );
         transcriptText =
           `TITLE: ${title}\n` +
           `CHANNEL: ${author}\n` +
+          (durationMinutes
+            ? `VIDEO DURATION: ${durationMinutes} minutes (~${durationMinutes * 150} spoken words target)\n`
+            : "") +
           `DESCRIPTION:\n${meta.snippet.description}\n\n` +
           `TRANSCRIPT:\n${transcript || "(transcript not available — analyze from title + description)"}`;
       } else {
         const ch = await fetchYouTubeChannelRecent(source.handleOrId, ytKey);
         title = ch.title;
         author = ch.author;
+        durationMinutes = parseIsoDurationToMinutes(ch.durationIso ?? "");
         transcriptText = ch.transcriptText;
+        if (durationMinutes) {
+          transcriptText =
+            `LATEST VIDEO DURATION: ${durationMinutes} minutes (~${durationMinutes * 150} spoken words target)\n\n` +
+            transcriptText;
+        }
       }
     } else {
       if (!apifyKey) throw new Error("Missing APIFY_API_KEY.");
@@ -323,6 +380,9 @@ export const analyzeContent = createServerFn({ method: "POST" })
         title = tt.title;
         author = tt.author;
         transcriptText = tt.transcriptText;
+        durationMinutes = tt.durationSeconds
+          ? Math.max(1, Math.round(tt.durationSeconds / 60))
+          : 0;
       } else {
         const tt = await fetchTikTokProfile(source.username, apifyKey);
         title = tt.title;
@@ -333,9 +393,13 @@ export const analyzeContent = createServerFn({ method: "POST" })
 
     // Cap payload to keep token usage sane.
     const trimmed = transcriptText.slice(0, 16000);
+    const durationLine = durationMinutes
+      ? `ORIGINAL VIDEO DURATION: ${formatDurationLabel(durationMinutes)} (${durationMinutes} minutes total). Your Script Writing section MUST match this runtime — target ~${durationMinutes * 150} spoken words, broken into chronological scenes with timestamps from 00:00 to ${formatDurationLabel(durationMinutes)}.\n\n`
+      : `ORIGINAL VIDEO DURATION: unknown — infer the target runtime from the transcript length and produce a full, scene-by-scene script of matching depth.\n\n`;
     const userPayload =
       `SOURCE: ${source.platform.toUpperCase()} (${source.kind})\n` +
       `URL: ${data.url}\n\n` +
+      durationLine +
       `--- CONTENT START ---\n${trimmed}\n--- CONTENT END ---\n\n` +
       `Now produce the Content Replication Kit exactly as instructed.`;
 
@@ -348,6 +412,8 @@ export const analyzeContent = createServerFn({ method: "POST" })
         author,
         url: data.url,
         transcriptPreview: trimmed.slice(0, 600),
+        durationMinutes: durationMinutes || undefined,
+        durationLabel: durationMinutes ? formatDurationLabel(durationMinutes) : undefined,
       },
       markdown,
     };
