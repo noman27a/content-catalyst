@@ -236,18 +236,71 @@ async function fetchYouTubeChannelRecent(handleOrId: string, apiKey: string) {
       `Could not resolve YouTube channel "${handleOrId}". Try pasting the full channel URL (https://www.youtube.com/channel/UC...) or check that YOUTUBE_API_KEY has YouTube Data API v3 enabled and quota remaining.`,
     );
   }
-  const list = await fetch(
-    `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channelId}&maxResults=5&order=date&type=video&key=${apiKey}`,
-  );
-  const lj = (await list.json()) as {
-    items?: Array<{
-      id: { videoId: string };
-      snippet: { title: string; description: string; channelTitle: string };
-    }>;
+  // Resolve the channel's uploads playlist (more reliable + cheaper than search.list)
+  let uploadsPlaylistId = "";
+  let channelTitle = "";
+  try {
+    const cRes = await fetch(
+      `https://www.googleapis.com/youtube/v3/channels?part=snippet,contentDetails&id=${channelId}&key=${apiKey}`,
+    );
+    const cj = (await cRes.json()) as {
+      items?: Array<{
+        snippet?: { title?: string };
+        contentDetails?: { relatedPlaylists?: { uploads?: string } };
+      }>;
+    };
+    uploadsPlaylistId =
+      cj.items?.[0]?.contentDetails?.relatedPlaylists?.uploads ?? "";
+    channelTitle = cj.items?.[0]?.snippet?.title ?? "";
+  } catch {
+    /* ignore */
+  }
+
+  type VidItem = {
+    id: { videoId: string };
+    snippet: { title: string; description: string; channelTitle: string };
   };
-  const videos = lj.items ?? [];
-  if (videos.length === 0) throw new Error("Channel has no recent videos.");
-  const channelTitle = videos[0].snippet.channelTitle;
+  let videos: VidItem[] = [];
+
+  if (uploadsPlaylistId) {
+    const pRes = await fetch(
+      `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&playlistId=${uploadsPlaylistId}&maxResults=5&key=${apiKey}`,
+    );
+    const pj = (await pRes.json()) as {
+      items?: Array<{
+        snippet: {
+          title: string;
+          description: string;
+          channelTitle: string;
+          resourceId: { videoId: string };
+        };
+      }>;
+    };
+    videos = (pj.items ?? []).map((it) => ({
+      id: { videoId: it.snippet.resourceId.videoId },
+      snippet: {
+        title: it.snippet.title,
+        description: it.snippet.description,
+        channelTitle: it.snippet.channelTitle,
+      },
+    }));
+  }
+
+  // Fallback: search.list (kept for edge cases)
+  if (videos.length === 0) {
+    const list = await fetch(
+      `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channelId}&maxResults=5&order=date&type=video&key=${apiKey}`,
+    );
+    const lj = (await list.json()) as { items?: VidItem[] };
+    videos = lj.items ?? [];
+  }
+
+  if (videos.length === 0) {
+    throw new Error(
+      "Channel has no recent public videos (or YouTube API quota exhausted).",
+    );
+  }
+  if (!channelTitle) channelTitle = videos[0].snippet.channelTitle;
   // Pull transcript for top video, titles+descriptions for the rest.
   const top = videos[0];
   const transcript = await fetchYouTubeTranscript(top.id.videoId);
