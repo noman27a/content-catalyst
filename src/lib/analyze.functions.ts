@@ -382,11 +382,7 @@ async function fetchYouTubeChannelRecent(handleOrId: string, apiKey: string) {
     /* ignore */
   }
 
-  type VidItem = {
-    id: { videoId: string };
-    snippet: { title: string; description: string; channelTitle: string };
-  };
-  let videos: VidItem[] = [];
+  let videos: YouTubeListVideo[] = [];
 
   if (uploadsPlaylistId) {
     const pRes = await fetch(
@@ -417,8 +413,14 @@ async function fetchYouTubeChannelRecent(handleOrId: string, apiKey: string) {
     const list = await fetch(
       `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channelId}&maxResults=5&order=date&type=video&key=${apiKey}`,
     );
-    const lj = (await list.json()) as { items?: VidItem[] };
+    const lj = (await list.json()) as { items?: YouTubeListVideo[] };
     videos = lj.items ?? [];
+  }
+
+  // Final fallback: scrape public channel tabs. This avoids false "no videos" errors
+  // when API quota/search/playlist endpoints return empty data for a valid channel.
+  if (videos.length === 0) {
+    videos = await scrapeYouTubeChannelVideos(handleOrId, channelId, channelTitle);
   }
 
   if (videos.length === 0) {
