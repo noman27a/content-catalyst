@@ -160,17 +160,82 @@ async function fetchYouTubeTranscript(videoId: string): Promise<string> {
 async function fetchYouTubeChannelRecent(handleOrId: string, apiKey: string) {
   // Resolve to channelId
   let channelId = handleOrId.startsWith("UC") ? handleOrId : "";
+  const raw = handleOrId.replace(/^@/, "");
+
+  // 1) Try the official channels endpoint with forHandle (works for @handles)
   if (!channelId) {
-    const q = handleOrId.replace(/^@/, "");
-    const search = await fetch(
-      `https://www.googleapis.com/youtube/v3/search?part=snippet&type=channel&q=${encodeURIComponent(q)}&maxResults=1&key=${apiKey}`,
-    );
-    const sj = (await search.json()) as {
-      items?: Array<{ snippet: { channelId: string; channelTitle: string } }>;
-    };
-    channelId = sj.items?.[0]?.snippet.channelId ?? "";
+    try {
+      const r = await fetch(
+        `https://www.googleapis.com/youtube/v3/channels?part=id&forHandle=${encodeURIComponent("@" + raw)}&key=${apiKey}`,
+      );
+      const j = (await r.json()) as { items?: Array<{ id: string }> };
+      channelId = j.items?.[0]?.id ?? "";
+    } catch {
+      /* ignore */
+    }
   }
-  if (!channelId) throw new Error("Could not resolve YouTube channel.");
+
+  // 2) Try forUsername (legacy /user/ URLs)
+  if (!channelId) {
+    try {
+      const r = await fetch(
+        `https://www.googleapis.com/youtube/v3/channels?part=id&forUsername=${encodeURIComponent(raw)}&key=${apiKey}`,
+      );
+      const j = (await r.json()) as { items?: Array<{ id: string }> };
+      channelId = j.items?.[0]?.id ?? "";
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // 3) Scrape the public channel page for the canonical channelId
+  if (!channelId) {
+    try {
+      const candidates = [
+        `https://www.youtube.com/@${raw}`,
+        `https://www.youtube.com/c/${raw}`,
+        `https://www.youtube.com/user/${raw}`,
+      ];
+      for (const url of candidates) {
+        const r = await fetch(url, {
+          headers: { "user-agent": "Mozilla/5.0", "accept-language": "en-US,en;q=0.9" },
+        });
+        if (!r.ok) continue;
+        const html = await r.text();
+        const m =
+          html.match(/"channelId":"(UC[0-9A-Za-z_-]{22})"/) ??
+          html.match(/<meta itemprop="channelId" content="(UC[0-9A-Za-z_-]{22})">/) ??
+          html.match(/\/channel\/(UC[0-9A-Za-z_-]{22})/);
+        if (m) {
+          channelId = m[1];
+          break;
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  // 4) Last resort: search API
+  if (!channelId) {
+    try {
+      const search = await fetch(
+        `https://www.googleapis.com/youtube/v3/search?part=snippet&type=channel&q=${encodeURIComponent(raw)}&maxResults=1&key=${apiKey}`,
+      );
+      const sj = (await search.json()) as {
+        items?: Array<{ snippet: { channelId: string; channelTitle: string } }>;
+      };
+      channelId = sj.items?.[0]?.snippet.channelId ?? "";
+    } catch {
+      /* ignore */
+    }
+  }
+
+  if (!channelId) {
+    throw new Error(
+      `Could not resolve YouTube channel "${handleOrId}". Try pasting the full channel URL (https://www.youtube.com/channel/UC...) or check that YOUTUBE_API_KEY has YouTube Data API v3 enabled and quota remaining.`,
+    );
+  }
   const list = await fetch(
     `https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=${channelId}&maxResults=5&order=date&type=video&key=${apiKey}`,
   );
