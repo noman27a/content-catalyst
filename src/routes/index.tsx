@@ -15,6 +15,7 @@ import {
   Music2,
   Link as LinkIcon,
   Flame,
+  Clock,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -310,6 +311,16 @@ function ResultView({
           </div>
           <CopyButton text={kit.markdown} label="Copy full kit" />
         </div>
+        {kit.source.durationLabel && (
+          <div className="mt-3 flex items-center gap-2 rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-foreground/90">
+            <Clock className="h-3.5 w-3.5 text-primary" />
+            <span>
+              Analyzed Video Duration:{" "}
+              <span className="font-semibold">{kit.source.durationLabel}</span>.
+              Generated Replication Kit matches the full duration.
+            </span>
+          </div>
+        )}
       </Card>
 
       <Tabs defaultValue={SECTION_ORDER[0]} className="w-full">
