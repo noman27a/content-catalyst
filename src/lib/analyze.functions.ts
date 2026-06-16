@@ -1,6 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { YoutubeTranscript } from "youtube-transcript";
+import { getYouTubeApiKey } from "./config.server";
 
 const InputSchema = z.object({
   url: z.string().trim().min(5).max(500),
@@ -99,13 +100,16 @@ async function fetchYouTubeVideo(videoId: string, apiKey: string) {
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     let reason = "";
+    let googleDetails: unknown = null;
     try {
       const j = JSON.parse(body);
+      googleDetails = j;
       reason = j?.error?.errors?.[0]?.reason || j?.error?.message || "";
     } catch {
       // ignore
     }
     if (res.status === 400) {
+      console.error("[YOUTUBE_API_400] Full Google error response:", JSON.stringify(googleDetails ?? body));
       throw new Error(
         `YouTube API rejected the request (400${reason ? `: ${reason}` : ""}). This usually means YOUTUBE_API_KEY is missing, invalid, or restricted. Check the key in Project Settings.`,
       );
@@ -355,6 +359,9 @@ async function fetchYouTubeChannelRecent(handleOrId: string, apiKey: string) {
         )
       ) {
         apiKeyIssue = message || reason || `YouTube API error (${r.status})`;
+      }
+      if (r.status === 400 || r.status === 403) {
+        console.error(`[YOUTUBE_API_${r.status}] Google error response:`, JSON.stringify(j));
       }
     } catch {
       /* ignore */
@@ -715,7 +722,7 @@ export const analyzeContent = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => InputSchema.parse(input))
   .handler(async ({ data }): Promise<ReplicationKit> => {
     const claudeKey = process.env.CLAUDE_API_KEY;
-    const ytKey = process.env.YOUTUBE_API_KEY;
+    const ytKey = getYouTubeApiKey();
     const apifyKey = process.env.APIFY_API_KEY;
     if (!claudeKey) throw new Error("Missing CLAUDE_API_KEY.");
 
@@ -726,7 +733,6 @@ export const analyzeContent = createServerFn({ method: "POST" })
     let durationMinutes = 0;
 
     if (source.platform === "youtube") {
-      if (!ytKey) throw new Error("Missing YOUTUBE_API_KEY.");
       if (source.kind === "video") {
         const meta = await fetchYouTubeVideo(source.id, ytKey);
         const transcript = await fetchYouTubeTranscript(source.id);

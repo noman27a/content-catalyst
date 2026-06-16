@@ -1,6 +1,14 @@
 import { createStart, createMiddleware } from "@tanstack/react-start";
 
 import { renderErrorPage } from "./lib/error-page";
+import { getYouTubeApiKey } from "./lib/config.server";
+
+// Startup validation: crash early in dev if the YouTube key is missing.
+try {
+  getYouTubeApiKey();
+} catch (e) {
+  console.error("[STARTUP]", e instanceof Error ? e.message : String(e));
+}
 
 const errorMiddleware = createMiddleware().server(async ({ next }) => {
   try {
