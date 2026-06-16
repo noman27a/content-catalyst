@@ -1,6 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 import { YoutubeTranscript } from "youtube-transcript";
+import { getYouTubeApiKey } from "./config.server";
 
 const InputSchema = z.object({
   url: z.string().trim().min(5).max(500),
