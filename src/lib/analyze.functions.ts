@@ -376,7 +376,8 @@ async function fetchYouTubeChannelRecent(handleOrId: string, apiKey: string) {
           `Link issue: no public YouTube channel found for "${handleOrId}". YouTube returned 404 for @${raw}, /c/${raw}, and /user/${raw}. Double-check spelling (handles are case sensitive) or paste the full channel URL (https://www.youtube.com/channel/UC...).`,
         );
       }
-    } catch {
+    } catch (e) {
+      if (e instanceof Error && e.message.startsWith("Link issue:")) throw e;
       /* ignore network errors, fall through */
     }
   }
