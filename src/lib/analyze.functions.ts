@@ -257,6 +257,7 @@ async function scrapeYouTubeChannelVideos(
     "user-agent":
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
     "accept-language": "en-US,en;q=0.9",
+    cookie: "CONSENT=YES+1; SOCS=CAI",
   };
 
   for (const base of bases) {
