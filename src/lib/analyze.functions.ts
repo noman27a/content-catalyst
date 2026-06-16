@@ -733,7 +733,6 @@ export const analyzeContent = createServerFn({ method: "POST" })
     let durationMinutes = 0;
 
     if (source.platform === "youtube") {
-      if (!ytKey) throw new Error("Missing YOUTUBE_API_KEY.");
       if (source.kind === "video") {
         const meta = await fetchYouTubeVideo(source.id, ytKey);
         const transcript = await fetchYouTubeTranscript(source.id);
