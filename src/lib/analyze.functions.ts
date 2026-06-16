@@ -722,7 +722,7 @@ export const analyzeContent = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => InputSchema.parse(input))
   .handler(async ({ data }): Promise<ReplicationKit> => {
     const claudeKey = process.env.CLAUDE_API_KEY;
-    const ytKey = process.env.YOUTUBE_API_KEY;
+    const ytKey = getYouTubeApiKey();
     const apifyKey = process.env.APIFY_API_KEY;
     if (!claudeKey) throw new Error("Missing CLAUDE_API_KEY.");
 
