@@ -124,7 +124,16 @@ function Index() {
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     const trimmed = url.trim();
-    if (trimmed.length < 8) {
+    if (!trimmed) {
+      toast.error("Paste a YouTube or TikTok link first.");
+      return;
+    }
+    const lower = trimmed.toLowerCase();
+    const looksValid =
+      lower.includes("youtube.com") ||
+      lower.includes("youtu.be") ||
+      lower.includes("tiktok.com");
+    if (!looksValid) {
       toast.error("Paste a YouTube or TikTok link first.");
       return;
     }
