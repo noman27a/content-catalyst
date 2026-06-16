@@ -28,35 +28,63 @@ type SourceKind =
   | { platform: "tiktok"; kind: "profile"; username: string };
 
 function detectSource(raw: string): SourceKind {
-  const url = raw.trim();
-  // YouTube video
-  const ytShort = url.match(/youtu\.be\/([A-Za-z0-9_-]{6,})/);
-  const ytWatch = url.match(/[?&]v=([A-Za-z0-9_-]{6,})/);
-  const ytShorts = url.match(/youtube\.com\/shorts\/([A-Za-z0-9_-]{6,})/);
-  if (ytShort || ytWatch || ytShorts) {
-    const id = (ytShort?.[1] ?? ytWatch?.[1] ?? ytShorts?.[1]) as string;
-    return { platform: "youtube", kind: "video", id };
+  // Normalize: trim whitespace, drop surrounding quotes, and parse with URL when possible
+  // so tracking params like ?si=..., ?feature=share, &t=10s never leak into IDs/handles.
+  let url = raw.trim().replace(/^['"<]+|['">]+$/g, "");
+  // Add protocol if missing so `new URL` works for things like "youtu.be/abc" or "youtube.com/@foo"
+  const withProto = /^https?:\/\//i.test(url) ? url : `https://${url}`;
+  let host = "";
+  let pathname = url;
+  let searchV: string | null = null;
+  try {
+    const u = new URL(withProto);
+    host = u.hostname.toLowerCase().replace(/^www\./, "").replace(/^m\./, "");
+    pathname = u.pathname; // already stripped of ?si=, &feature=, #t=, etc.
+    searchV = u.searchParams.get("v");
+  } catch {
+    // fall back to raw string matching below
   }
-  // YouTube channel
-  const ytHandle = url.match(/youtube\.com\/(@[A-Za-z0-9_.-]+)/);
-  const ytChannelId = url.match(/youtube\.com\/channel\/([A-Za-z0-9_-]+)/);
-  const ytCustom = url.match(/youtube\.com\/(?:c|user)\/([A-Za-z0-9_.-]+)/);
-  if (ytHandle || ytChannelId || ytCustom) {
-    return {
-      platform: "youtube",
-      kind: "channel",
-      handleOrId: (ytHandle?.[1] ?? ytChannelId?.[1] ?? ytCustom?.[1]) as string,
-    };
+
+  // ---------- YouTube video ----------
+  if (host === "youtu.be") {
+    const m = pathname.match(/^\/([A-Za-z0-9_-]{6,})/);
+    if (m) return { platform: "youtube", kind: "video", id: m[1] };
   }
-  // TikTok video
-  if (/tiktok\.com\/.+\/video\/\d+/.test(url) || /vm\.tiktok\.com\//.test(url)) {
-    return { platform: "tiktok", kind: "video", url };
+  if (host.endsWith("youtube.com")) {
+    if (searchV && /^[A-Za-z0-9_-]{6,}$/.test(searchV)) {
+      return { platform: "youtube", kind: "video", id: searchV };
+    }
+    const shorts = pathname.match(/^\/shorts\/([A-Za-z0-9_-]{6,})/);
+    if (shorts) return { platform: "youtube", kind: "video", id: shorts[1] };
+    const embed = pathname.match(/^\/(?:embed|live|v)\/([A-Za-z0-9_-]{6,})/);
+    if (embed) return { platform: "youtube", kind: "video", id: embed[1] };
+
+    // ---------- YouTube channel ----------
+    const handle = pathname.match(/^\/(@[A-Za-z0-9_.-]+)/);
+    if (handle) return { platform: "youtube", kind: "channel", handleOrId: handle[1] };
+    const channelId = pathname.match(/^\/channel\/([A-Za-z0-9_-]+)/);
+    if (channelId) return { platform: "youtube", kind: "channel", handleOrId: channelId[1] };
+    const custom = pathname.match(/^\/(?:c|user)\/([A-Za-z0-9_.-]+)/);
+    if (custom) return { platform: "youtube", kind: "channel", handleOrId: custom[1] };
   }
-  // TikTok profile
-  const ttProfile = url.match(/tiktok\.com\/(@[A-Za-z0-9_.-]+)/);
-  if (ttProfile) {
-    return { platform: "tiktok", kind: "profile", username: ttProfile[1] };
+
+  // ---------- TikTok ----------
+  if (host.endsWith("tiktok.com")) {
+    if (/\/video\/\d+/.test(pathname) || host === "vm.tiktok.com") {
+      return { platform: "tiktok", kind: "video", url: withProto };
+    }
+    const prof = pathname.match(/^\/(@[A-Za-z0-9_.-]+)/);
+    if (prof) return { platform: "tiktok", kind: "profile", username: prof[1] };
   }
+
+  // ---------- Fallback: bare handle or ID ----------
+  if (/^@[A-Za-z0-9_.-]+$/.test(url)) {
+    return { platform: "youtube", kind: "channel", handleOrId: url };
+  }
+  if (/^[A-Za-z0-9_-]{11}$/.test(url)) {
+    return { platform: "youtube", kind: "video", id: url };
+  }
+
   throw new Error(
     "Could not recognize this URL. Paste a YouTube video/channel link or a TikTok video/profile link.",
   );
