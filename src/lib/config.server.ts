@@ -24,3 +24,13 @@ export function getServerConfig() {
     //   stripeSecretKey: process.env.STRIPE_SECRET_KEY,
   };
 }
+
+export function getYouTubeApiKey(): string {
+  const key = process.env.YOUTUBE_API_KEY;
+  if (!key) {
+    throw new Error(
+      "YOUTUBE_API_KEY is not configured. Set it in Project Settings → Secrets (or your .env file in local dev).",
+    );
+  }
+  return key;
+}
