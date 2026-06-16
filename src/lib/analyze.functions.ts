@@ -360,6 +360,9 @@ async function fetchYouTubeChannelRecent(handleOrId: string, apiKey: string) {
       ) {
         apiKeyIssue = message || reason || `YouTube API error (${r.status})`;
       }
+      if (r.status === 400 || r.status === 403) {
+        console.error(`[YOUTUBE_API_${r.status}] Google error response:`, JSON.stringify(j));
+      }
     } catch {
       /* ignore */
     }
