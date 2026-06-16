@@ -100,13 +100,16 @@ async function fetchYouTubeVideo(videoId: string, apiKey: string) {
   if (!res.ok) {
     const body = await res.text().catch(() => "");
     let reason = "";
+    let googleDetails: unknown = null;
     try {
       const j = JSON.parse(body);
+      googleDetails = j;
       reason = j?.error?.errors?.[0]?.reason || j?.error?.message || "";
     } catch {
       // ignore
     }
     if (res.status === 400) {
+      console.error("[YOUTUBE_API_400] Full Google error response:", JSON.stringify(googleDetails ?? body));
       throw new Error(
         `YouTube API rejected the request (400${reason ? `: ${reason}` : ""}). This usually means YOUTUBE_API_KEY is missing, invalid, or restricted. Check the key in Project Settings.`,
       );
